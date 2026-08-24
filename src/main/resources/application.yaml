@@ -1,0 +1,42 @@
+# Spring Boot Application Configuration - Phase 1
+# ================================================
+# This configuration is for the in-memory Phase 1 implementation.
+# In Phase 2+, we'll add Redis, metrics, worker scheduling configs.
+
+spring:
+  application:
+    name: distributed-rate-limiter
+
+  # Phase 1: No Redis yet, so disable it
+  data:
+    redis:
+      # We'll enable Redis in Phase 2
+      # For Phase 1, just ensure it doesn't fail if no Redis available
+      enabled: false
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+  error:
+    include-message: always
+    include-stacktrace: on_param
+
+# Logging configuration
+logging:
+  level:
+    root: INFO
+    com.distributed.ratelimiter: DEBUG
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+# Phase 1: No Prometheus/Actuator exposure yet
+# In Phase 5, we'll configure metrics endpoint
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: always
