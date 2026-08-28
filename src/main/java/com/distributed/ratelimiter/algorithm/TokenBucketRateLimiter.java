@@ -3,171 +3,317 @@ package com.distributed.ratelimiter.algorithm;
 import com.distributed.ratelimiter.domain.RateLimitDecision;
 import com.distributed.ratelimiter.domain.RateLimit;
 import com.distributed.ratelimiter.domain.RequestContext;
+import com.distributed.ratelimiter.redis.RedisClient;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.List;
 
 /**
- * Token Bucket rate limiter - Phase 1 in-memory implementation.
+ * Token Bucket Rate Limiter - Phase 2: Redis-backed implementation.
  *
- * ALGORITHM OVERVIEW:
- * ==================
- * A "bucket" holds tokens. Each request consumes 1 token.
- * Tokens refill over time at a fixed rate.
+ * MIGRATION FROM PHASE 1:
+ * =======================
+ * Phase 1: State stored in-memory HashMap (not distributed)
+ * Phase 2: State stored in Redis (shared across instances)
  *
- * If tokens available: REQUEST ALLOWED
- * If no tokens: REQUEST REJECTED (tell client to retry after time T)
+ * Algorithm logic remains identical:
+ * 1. Refill bucket based on elapsed time
+ * 2. Consume 1 token if available
+ * 3. Return decision (ALLOWED/REJECTED)
  *
- * BEHAVIOR:
- * - Burst-friendly: All available tokens can be consumed immediately
- * - Example: 100-token bucket refilled at 100/min
- *   - First 100 requests allowed instantly
- *   - Request 101 rejected, retry after 600ms (1 token refill time)
+ * WHAT CHANGED:
+ * - Removed in-memory ConcurrentHashMap
+ * - Removed synchronized keyword (Redis handles atomicity)
+ * - Inject RedisClient dependency
+ * - Call Lua script instead of local refill/consume logic
+ * - Pass current timestamp to script (Redis is clock-neutral)
  *
- * REFILL CALCULATION (for Phase 2+ Lua script):
- * - lastRefillTimeMs: when we last updated the bucket
- * - currentTimeMs: now
- * - elapsedMs = currentTimeMs - lastRefillTimeMs
- * - tokensToAdd = (refillRatePerMinute / 60,000) * elapsedMs
- * - newTokens = min(capacity, oldTokens + tokensToAdd)
+ * WHY LUA SCRIPT:
+ * ===============
+ * Without Lua, three instances checking same user rate limit concurrently:
  *
- * STATE PER BUCKET (Phase 1 in-memory):
- * - tokens: current token count (capped at capacity)
- * - lastRefillTimeMs: timestamp of last refill
+ *   Instance 1            Instance 2            Instance 3
+ *   READ tokens=100       (waits)               (waits)
+ *        ↓
+ *   COMPUTE refill=1
+ *   WRITE tokens=99  --→  READ tokens=99       READ tokens=99
+ *        ↓                COMPUTE refill=1      COMPUTE refill=1
+ *   Consume: 98           WRITE tokens=98       WRITE tokens=98
  *
- * PHASE 1 IMPORTANT:
- * - Single-threaded safety: This implementation is NOT thread-safe.
- *   We use ConcurrentHashMap for storage, but the refill+consume logic
- *   itself is not atomic.
- * - In Phase 2, Redis + Lua will make this atomic across all instances.
+ *   Result: All three allowed same tokens! (race condition)
  *
- * DESIGN DECISION: Why separate bucket state class?
- * - Keeps mutable state isolated
- * - Clear what we're tracking per rate limit
- * - Makes it easier to migrate to Redis in Phase 2
+ * With Lua script (atomic on Redis):
+ *   Instance 1 script runs entirely:   READ → COMPUTE → CONSUME → WRITE
+ *   Instance 2 waits for Instance 1
+ *   Instance 2 script runs entirely:   READ → COMPUTE → CONSUME → WRITE
+ *   Instance 3 waits for Instance 2
+ *   ...
+ *
+ *   Result: Serialized execution, no race conditions, correct limit enforced
+ *
+ * REDIS KEY STRUCTURE:
+ * ====================
+ * Key: "rl:token-bucket:{userId}:{service}"
+ * Example: "rl:token-bucket:user123:otp"
+ *
+ * Value: JSON string
+ * {
+ *   "tokens": 95,
+ *   "lastRefillTimeMs": 1724893201234
+ * }
+ *
+ * DESIGN DECISION: Why JSON string vs Redis HASH?
+ * - JSON as single key = atomic read/write in Lua (no multi-field transactions)
+ * - HASH requires HMGET/HMSET = more complex Lua scripting
+ * - JSON is human-readable for debugging with redis-cli
+ * - Sufficient performance (string operations are O(1) in Redis)
  */
 @Slf4j
 public class TokenBucketRateLimiter implements RateLimiter {
 
-    /**
-     * Mutable bucket state (tokens and last refill time).
-     * In Phase 1, stored in-memory. In Phase 2, stored in Redis.
-     */
-    private static class BucketState {
-        volatile long tokens;
-        volatile long lastRefillTimeMs;
-
-        BucketState(long initialTokens, long timestampMs) {
-            this.tokens = initialTokens;
-            this.lastRefillTimeMs = timestampMs;
-        }
-    }
-
     private final RateLimit config;
+    private final RedisClient redisClient;
 
     /**
-     * In-memory storage: key -> bucket state.
-     * Key format: "ratelimit:{userId}:{service}"
-     *
-     * In Phase 2, this is replaced with Redis.
-     * ConcurrentHashMap chosen for simplicity; actual concurrency
-     * control happens at the algorithm level (refill+consume must be atomic).
+     * Lua script for atomic token refill + consumption.
+     * Embedded as multi-line string for readability.
+     * (Phase 2: inline scripts; Phase 4 can use SCRIPT LOAD for caching)
      */
-    private final ConcurrentMap<String, BucketState> buckets = new ConcurrentHashMap<>();
+    private static final String TOKEN_BUCKET_SCRIPT = """
+            local stateJson = redis.call('GET', KEYS[1])
+            
+            local capacity = tonumber(ARGV[1])
+            local refillRatePerMinute = tonumber(ARGV[2])
+            local nowMs = tonumber(ARGV[3])
+            
+            local currentTokens
+            local lastRefillTimeMs
+            
+            if stateJson == false then
+                currentTokens = capacity
+                lastRefillTimeMs = nowMs
+            else
+                local tokensMatch = stateJson:match('"tokens":(%d+)')
+                currentTokens = tonumber(tokensMatch) or capacity
+                
+                local lastTimeMatch = stateJson:match('"lastRefillTimeMs":(%d+)')
+                lastRefillTimeMs = tonumber(lastTimeMatch) or nowMs
+            end
+            
+            local elapsedMs = nowMs - lastRefillTimeMs
+            local tokensToAdd = 0
+            
+            if elapsedMs > 0 then
+                tokensToAdd = (refillRatePerMinute * elapsedMs) / 60000
+            end
+            
+            currentTokens = math.min(capacity, currentTokens + tokensToAdd)
+            
+            local retryAfterMs = 0
+            local allowed = false
+            local reason = ""
+            
+            if currentTokens > 0 then
+                currentTokens = currentTokens - 1
+                allowed = true
+                reason = "token_available"
+            else
+                allowed = false
+                reason = "no_tokens_available"
+                retryAfterMs = math.floor(60000 / refillRatePerMinute)
+            end
+            
+            local updatedStateJson = '{"tokens":' .. tostring(math.floor(currentTokens)) ..
+                                    ',"lastRefillTimeMs":' .. tostring(nowMs) .. '}'
+            
+            redis.call('SET', KEYS[1], updatedStateJson)
+            
+            local decision = allowed and "allowed" or "rejected"
+            return {decision, math.floor(currentTokens), reason, retryAfterMs}
+            """;
 
-    public TokenBucketRateLimiter(RateLimit config) {
+    /**
+     * Constructor: dependency injection for config and Redis client.
+     *
+     * WHY INJECT:
+     * - Makes testing easier (mock RedisClient)
+     * - Makes dependencies explicit
+     * - Follows Spring best practices
+     *
+     * @param config Rate limit configuration (capacity, refill rate, TTL)
+     * @param redisClient Redis client for Lua script execution
+     */
+    public TokenBucketRateLimiter(RateLimit config, RedisClient redisClient) {
         this.config = config;
+        this.redisClient = redisClient;
+        log.info("Initialized TokenBucketRateLimiter (Redis-backed, Phase 2)");
     }
 
     /**
-     * Main rate limit check: refill bucket and consume one token.
+     * Main rate limit check: execute Lua script on Redis.
      *
-     * STEP-BY-STEP:
-     * 1. Get or create bucket state
-     * 2. Calculate elapsed time since last refill
-     * 3. Add refilled tokens (capped at capacity)
-     * 4. If tokens > 0: consume 1, return ALLOWED
-     * 5. If tokens = 0: return REJECTED with retry-after time
+     * FLOW:
+     * -----
+     * 1. Extract userId and service from RequestContext
+     * 2. Build Redis key for this rate limit
+     * 3. Get current timestamp from context
+     * 4. Execute Lua script with key and arguments
+     * 5. Parse script response (List of values)
+     * 6. Convert to RateLimitDecision
+     * 7. Log the result
      *
-     * THREAD-SAFETY NOTE (Phase 1):
-     * This logic is NOT atomic. In a multi-threaded scenario:
-     * - Thread A and B might read same bucket state
-     * - Both calculate refill independently
-     * - Race condition on token consumption
+     * PARAMETERS:
+     * -----------
+     * context: RequestContext containing userId, service, timestamp
      *
-     * PHASE 2 FIX: Redis Lua script makes entire operation atomic
-     * on the server side, eliminating race conditions across
-     * all three application instances.
+     * RETURN:
+     * -------
+     * RateLimitDecision: allowed/rejected with metadata
+     *
+     * REDIS INTERACTION:
+     * ------------------
+     * Key: "rl:token-bucket:{userId}:{service}"
+     * Script: TOKEN_BUCKET_SCRIPT (defined above)
+     * Args: [capacity, refillRatePerMinute, currentTimeMs]
+     *
+     * ATOMICITY:
+     * ----------
+     * Entire script (read → compute → write) happens in one Redis operation.
+     * No race conditions, even with multiple instances.
+     *
+     * ERROR HANDLING:
+     * ---------------
+     * If Redis unavailable:
+     * - RedisClient throws RedisOperationException
+     * - Exception propagates up (fail-closed)
+     * - Request rejected (safer than allowing unlimited)
+     *
+     * If script has syntax error:
+     * - Redis returns error
+     * - Exception logged and propagated
+     * - Request rejected
+     *
+     * PERFORMANCE:
+     * -----------
+     * Redis EVAL: ~1-5ms (network + script execution)
+     * Compared to Phase 1 in-memory: 0.1μs
+     * Trade-off: latency for correctness in distributed system
      */
     @Override
-    public synchronized RateLimitDecision checkRateLimit(RequestContext context) {
-        String key = context.getRateLimitKey();
-        long now = context.timestampMs();
+    public RateLimitDecision checkRateLimit(RequestContext context) {
+        String key = "rl:token-bucket:" + context.getRateLimitKey();
+        long nowMs = context.timestampMs();
 
-        // Step 1: Get or create bucket
-        BucketState bucket = buckets.computeIfAbsent(
-                key,
-                str -> {
-                    log.debug("Initializing new bucket for key: {}", key);
-                    return new BucketState(config.capacity(), now);
-                }
-        );
+        log.debug("Checking Token Bucket rate limit: key={}, timestamp={}", key, nowMs);
 
-        // Step 2: Calculate refill
-        long elapsedMs = now - bucket.lastRefillTimeMs;
-        long tokensToAdd = config.calculateRefill(elapsedMs);
-
-        if (tokensToAdd > 0) {
-            log.debug(
-                    "Refilling bucket {}: elapsed={}ms, adding {} tokens",
-                    key, elapsedMs, tokensToAdd
+        try {
+            // Execute Lua script
+            Object result = redisClient.evalScript(
+                    TOKEN_BUCKET_SCRIPT,
+                    1,  // numKeys = 1 (only KEYS[1])
+                    key,                                           // KEYS[1]
+                    String.valueOf(config.capacity()),             // ARGV[1]
+                    String.valueOf(config.refillRatePerMinute()),  // ARGV[2]
+                    String.valueOf(nowMs)                          // ARGV[3]
             );
-            bucket.tokens = Math.min(config.capacity(), bucket.tokens + tokensToAdd);
-            bucket.lastRefillTimeMs = now;
-        }
 
-        // Step 3: Attempt consumption
-        if (bucket.tokens > 0) {
-            bucket.tokens--;
-            log.debug("Token consumed for {}. Remaining: {}", key, bucket.tokens);
-            return RateLimitDecision.allowed(
-                    bucket.tokens,
-                    "token_available"
-            );
-        } else {
-            // Step 4: No tokens - rejected
-            long retryAfterMs = config.getRefillIntervalMs();
-            log.warn(
-                    "Rate limit exceeded for {}. Rejecting request. Retry after {}ms",
-                    key, retryAfterMs
-            );
+            // Parse response
+            if (!(result instanceof List<?> list)) {
+                log.error("Unexpected script response type: {}", result.getClass());
+                // Fail closed: reject on malformed response
+                return RateLimitDecision.rejected(
+                        config.getRefillIntervalMs(),
+                        "script_error"
+                );
+            }
+
+            if (list.size() != 4) {
+                log.error("Script response has wrong size: {} (expected 4)", list.size());
+                return RateLimitDecision.rejected(
+                        config.getRefillIntervalMs(),
+                        "script_error"
+                );
+            }
+
+            // Extract response fields
+            String decision = (String) list.get(0);     // "allowed" or "rejected"
+            long remainingTokens = ((Long) list.get(1)); // tokens after consumption
+            String reason = (String) list.get(2);        // reason string
+            long retryAfterMs = ((Long) list.get(3));    // retry-after (ms)
+
+            // Convert to RateLimitDecision
+            if ("allowed".equals(decision)) {
+                log.debug(
+                        "Token Bucket: ALLOWED for {}. Remaining tokens: {}",
+                        key, remainingTokens
+                );
+                return RateLimitDecision.allowed(
+                        remainingTokens,
+                        reason
+                );
+            } else {
+                log.warn(
+                        "Token Bucket: REJECTED for {}. Retry after: {}ms",
+                        key, retryAfterMs
+                );
+                return RateLimitDecision.rejected(
+                        retryAfterMs,
+                        reason
+                );
+            }
+
+        } catch (RedisClient.RedisOperationException e) {
+            log.error("Redis operation failed for key {}: {}", key, e.getMessage());
+            // Fail closed: reject request when Redis is unavailable
             return RateLimitDecision.rejected(
-                    retryAfterMs,
-                    "no_tokens_available"
+                    config.getRefillIntervalMs(),
+                    "redis_error"
+            );
+        } catch (Exception e) {
+            log.error("Unexpected error in Token Bucket check for key {}: {}", key, e.getMessage(), e);
+            // Fail closed: reject on unexpected error
+            return RateLimitDecision.rejected(
+                    config.getRefillIntervalMs(),
+                    "internal_error"
             );
         }
     }
 
     @Override
     public String getAlgorithmName() {
-        return "TOKEN_BUCKET";
+        return "TOKEN_BUCKET_REDIS";
     }
 
     /**
-     * Reset all buckets (useful for testing).
-     * In Phase 2, this would clear Redis state.
+     * Reset all Token Bucket state (for testing).
+     *
+     * USAGE:
+     * ------
+     * Before running tests, clear all rate limit data from Redis.
+     * Allows fresh test scenarios.
+     *
+     * IMPLEMENTATION:
+     * ---------------
+     * In Phase 2: We don't implement this yet (would need KEYS pattern matching)
+     * Phase 4: Add Redis SCAN to find all "rl:token-bucket:*" keys and delete
+     *
+     * WHY IMPORTANT:
+     * - Tests are isolated (no state leakage between tests)
+     * - Reproduce same conditions consistently
+     * - Verify rate limit resets properly
+     *
+     * TODO Phase 4:
+     * Add this implementation:
+     *   List<String> keys = redisClient.keysPattern("rl:token-bucket:*");
+     *   for (String key : keys) {
+     *       redisClient.delete(key);
+     *   }
      */
     @Override
     public void reset() {
-        log.info("Resetting all Token Bucket state");
-        buckets.clear();
-    }
-
-    /**
-     * Debug method: get bucket state (for testing).
-     */
-    protected BucketState getBucketState(String key) {
-        return buckets.get(key);
+        log.warn("Token Bucket reset not fully implemented in Phase 2");
+        log.warn("Requires Redis SCAN pattern matching (coming in Phase 4)");
+        // TODO: Implement in Phase 4 when adding advanced Redis operations
     }
 }

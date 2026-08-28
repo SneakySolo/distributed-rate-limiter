@@ -6,7 +6,9 @@ import com.distributed.ratelimiter.algorithm.TokenBucketRateLimiter;
 import com.distributed.ratelimiter.domain.RateLimitDecision;
 import com.distributed.ratelimiter.domain.RateLimit;
 import com.distributed.ratelimiter.domain.RequestContext;
+import com.distributed.ratelimiter.redis.RedisClient;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -61,11 +63,24 @@ public class RateLimiterService {
      * - Separation of concerns: each algorithm is independent
      * - Makes testing easier (can test each limiter in isolation)
      */
-    public RateLimiterService() {
-        this.tokenBucketLimiter = new TokenBucketRateLimiter(RateLimit.STANDARD);
-        this.leakyBucketLimiter = new LeakyBucketRateLimiter(RateLimit.STANDARD);
 
-        log.info("Initialized RateLimiterService with Token Bucket and Leaky Bucket limiters");
+    @Autowired
+    private RedisClient redisClient;
+
+    public RateLimiterService(RedisClient redisClient) {
+        this.tokenBucketLimiter = new TokenBucketRateLimiter(
+                RateLimit.STANDARD,
+                redisClient
+        );
+
+        // LeakyBucket: Only pass RateLimit (Phase 1 in-memory)
+        this.leakyBucketLimiter = new LeakyBucketRateLimiter(
+                RateLimit.STANDARD
+        );
+
+        log.info("✅ Initialized RateLimiterService");
+        log.info("   - TokenBucket: Redis-backed (Phase 2)");
+        log.info("   - LeakyBucket: In-memory (Phase 1, Redis coming in Phase 3)");
     }
 
     /**
