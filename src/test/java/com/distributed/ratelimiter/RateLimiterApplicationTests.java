@@ -9,5 +9,4 @@ class RateLimiterApplicationTests {
 	@Test
 	void contextLoads() {
 	}
-
 }
