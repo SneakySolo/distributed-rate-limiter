@@ -14,7 +14,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
-@SpringBootTest
+@SpringBootTest(properties = {
+        "ratelimiter.tokenBucket.capacity=5",
+        "ratelimiter.tokenBucket.refillRatePerMinute=1"
+})
 @AutoConfigureMockMvc
 public class OtpControllerTest extends TestRedisContainer {
 
@@ -46,8 +49,8 @@ public class OtpControllerTest extends TestRedisContainer {
     public void testReturns429WhenLimitExceeded() throws Exception {
         String userId = "user-limit";
 
-        // Send exactly 100 requests (capacity limit)
-        for (int i = 0; i < 100; i++) {
+        // Send exactly 5 requests (capacity limit with test config)
+        for (int i = 0; i < 5; i++) {
             mockMvc.perform(post("/otp/send")
                             .header("X-User-Id", userId)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -55,7 +58,7 @@ public class OtpControllerTest extends TestRedisContainer {
                     .andExpect(status().isOk());
         }
 
-        // The 101st request should be rejected with 429
+        // The 6th request should be rejected with 429
         mockMvc.perform(post("/otp/send")
                         .header("X-User-Id", userId)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -68,8 +71,8 @@ public class OtpControllerTest extends TestRedisContainer {
         String user1 = "otp-user1";
         String user2 = "otp-user2";
 
-        // Exhaust user1's quota
-        for (int i = 0; i < 100; i++) {
+        // Exhaust user1's quota (5 tokens with test config)
+        for (int i = 0; i < 5; i++) {
             mockMvc.perform(post("/otp/send")
                             .header("X-User-Id", user1)
                             .contentType(MediaType.APPLICATION_JSON)

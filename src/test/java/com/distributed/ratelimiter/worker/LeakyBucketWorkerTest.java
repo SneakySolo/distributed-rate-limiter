@@ -82,7 +82,9 @@ public class LeakyBucketWorkerTest extends TestRedisContainer {
         worker.processQueue();
 
         Long finalSize = redisTemplate.opsForZSet().size(queueKey);
-        assertEquals(0, finalSize);
+        // With leak rate of 100/min (600ms per request), only the first request is due after 100ms.
+        // Requests 1-4 remain queued for future processing (scheduled at +600ms, +1200ms, +1800ms, +2400ms).
+        assertEquals(4, finalSize);
     }
 
     @Test
