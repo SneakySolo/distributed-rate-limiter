@@ -1,10 +1,10 @@
 package com.distributed.ratelimiter.algorithm;
 
+import com.distributed.ratelimiter.config.LuaScriptLoader;
 import com.distributed.ratelimiter.config.RateLimiterConfig;
 import com.distributed.ratelimiter.domain.RateLimitDecision;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
@@ -17,39 +17,25 @@ import java.util.UUID;
 public class LeakyBucketRateLimiter implements RateLimiter {
 
     private static final Logger log = LoggerFactory.getLogger(LeakyBucketRateLimiter.class);
-    private static final String ENQUEUE_SCRIPT = """
-            local queueKey = KEYS[1]
-            local requestId = ARGV[1]
-            local scheduledMs = tonumber(ARGV[2])
-            local capacity = tonumber(ARGV[3])
-            
-            local queueDepth = redis.call('ZCARD', queueKey)
-            
-            if queueDepth >= capacity then
-                return {0, queueDepth}
-            end
-            
-            redis.call('ZADD', queueKey, scheduledMs, requestId)
-            queueDepth = redis.call('ZCARD', queueKey)
-            
-            return {1, queueDepth}
-            """;
 
     private final RedisTemplate<String, String> redisTemplate;
     private final RateLimiterConfig config;
     private final RedisScript<List> enqueueScript;
 
-    public LeakyBucketRateLimiter(RedisTemplate<String, String> redisTemplate, RateLimiterConfig config) {
+    public LeakyBucketRateLimiter(
+            RedisTemplate<String, String> redisTemplate,
+            RateLimiterConfig config,
+            LuaScriptLoader scriptLoader) {
         this.redisTemplate = redisTemplate;
         this.config = config;
-        this.enqueueScript = RedisScript.of(ENQUEUE_SCRIPT, List.class);
+        this.enqueueScript = RedisScript.of(scriptLoader.getLeakyBucketEnqueueScript(), List.class);
     }
 
     @Override
     public RateLimitDecision tryConsume(String userId, String service) {
         try {
             String requestId = generateRequestId();
-            long nowMs = fetchRedisTimeMs();
+            long nowMs = System.currentTimeMillis();
             String queueKey = formatQueueKey(userId, service);
 
             // Calculate scheduled time (leak rate = ~1 per 600ms)
@@ -70,7 +56,6 @@ public class LeakyBucketRateLimiter implements RateLimiter {
                 long newDepth = ((Number) result.get(1)).longValue();
 
                 if (success == 1) {
-                    // Store initial status
                     String statusKey = formatStatusKey(requestId);
                     redisTemplate.opsForValue().set(statusKey, "QUEUED");
                     redisTemplate.expire(statusKey, java.time.Duration.ofMinutes(10));
@@ -103,9 +88,5 @@ public class LeakyBucketRateLimiter implements RateLimiter {
 
     private String generateRequestId() {
         return UUID.randomUUID().toString();
-    }
-
-    private long fetchRedisTimeMs() {
-        return System.currentTimeMillis();
     }
 }

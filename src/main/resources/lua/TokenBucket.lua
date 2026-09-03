@@ -3,7 +3,6 @@
 -- ARGV[1] = capacity
 -- ARGV[2] = refill rate per minute (tokens)
 -- ARGV[3] = ttl seconds
--- ARGV[4] = current Redis time in milliseconds
 --
 -- Returns: {allowed (1 or 0), remainingTokens, retryAfterMs}
 
@@ -11,7 +10,10 @@ local bucketKey = KEYS[1]
 local capacity = tonumber(ARGV[1])
 local refillRatePerMin = tonumber(ARGV[2])
 local ttlSecs = tonumber(ARGV[3])
-local nowMs = tonumber(ARGV[4])
+
+-- Get time from Redis (authoritative clock)
+local time = redis.call('TIME')
+local nowMs = (tonumber(time[1]) * 1000) + (math.floor(tonumber(time[2]) / 1000))
 
 -- Refill rate in tokens per millisecond
 local refillRatePerMs = refillRatePerMin / 60000.0
