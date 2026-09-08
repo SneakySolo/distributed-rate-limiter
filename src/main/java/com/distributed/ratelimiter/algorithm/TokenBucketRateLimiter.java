@@ -28,6 +28,8 @@ public class TokenBucketRateLimiter implements RateLimiter {
         this.redisTemplate = redisTemplate;
         this.config = config;
         this.script = RedisScript.of(scriptLoader.getTokenBucketScript(), List.class);
+        // also the RedisScript.of(scriptText, returnType) takes the raw Lua string and the expected Java return type, and computes a SHA1 hash of the script text.
+        // The SHA1 is used internally by Spring/Redis for script caching, hence it is created once and reused again
     }
 
     @Override
@@ -37,10 +39,11 @@ public class TokenBucketRateLimiter implements RateLimiter {
 
             List<Object> result = redisTemplate.execute(
                     script,
-                    Arrays.asList(bucketKey),
-                    String.valueOf(config.getTokenBucket().getCapacity()),
-                    String.valueOf(config.getTokenBucket().getRefillRatePerMinute()),
-                    String.valueOf(config.getTokenBucket().getTtlSeconds())
+                    Arrays.asList(bucketKey), // ex - tb:user-123:otp
+                    String.valueOf(config.getTokenBucket().getCapacity()), // ex - 100
+                    String.valueOf(config.getTokenBucket().getRefillRatePerMinute()), // ex - 100
+                    String.valueOf(config.getTokenBucket().getTtlSeconds()) // ex - 300
+                    // LUA also receives Redis time not system time
             );
 
             if (result != null && result.size() >= 3) {

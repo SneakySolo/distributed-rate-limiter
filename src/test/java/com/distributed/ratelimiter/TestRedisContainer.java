@@ -16,6 +16,10 @@ public abstract class TestRedisContainer {
         redis.start();
     }
 
+    public static GenericContainer<?> getContainer() {
+        return redis;
+    }
+
     @DynamicPropertySource
     static void redisProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.data.redis.host", redis::getHost);

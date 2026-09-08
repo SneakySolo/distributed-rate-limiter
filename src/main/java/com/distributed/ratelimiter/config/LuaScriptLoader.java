@@ -9,6 +9,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 
+/*
+ * This is to load our LUA file into algos during runtime
+ * also this reads the whole file into a byte array and converts it to a String.
+ * The scripts are loaded once at startup and held in memory as plain Java Strings.
+*/
+
 @Component
 public class LuaScriptLoader {
 
