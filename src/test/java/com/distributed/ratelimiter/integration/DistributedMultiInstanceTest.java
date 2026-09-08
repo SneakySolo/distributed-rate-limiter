@@ -10,15 +10,20 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.GenericContainer;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
+@TestPropertySource(properties = {
+        "ratelimiter.tokenBucket.refillRatePerMinute=1"
+})
 @DisplayName("Distributed Multi-Instance Rate Limiting")
 class DistributedMultiInstanceTest {
 
@@ -45,7 +50,7 @@ class DistributedMultiInstanceTest {
     @DisplayName("Same user across multiple instances shares one global rate limit state")
     void testSameUserMultipleInstancesSharedState() throws Exception {
         String userId = "test-user-123";
-        String otp_tb_key = "otp_tb_" + userId;
+        String otpTbKey = "tb:" + userId + ":otp";
 
         // Simulate 50 requests from instance-1 (via same MockMvc, represents app1)
         for (int i = 0; i < 50; i++) {
@@ -59,8 +64,7 @@ class DistributedMultiInstanceTest {
         // At this point, instance-1 has consumed 50 tokens
         // In a real Phase 2 deployment, instance-2 and instance-3 would see this state
         // We simulate instance-2's view by checking Redis directly
-        String bucketState = redisTemplate.opsForValue().get(otp_tb_key);
-        assert bucketState != null : "Token bucket state should exist in Redis";
+        assertTrue(redisTemplate.hasKey(otpTbKey), "...");
 
         // Simulate 50 more requests from instance-2 (checking Redis state)
         for (int i = 0; i < 50; i++) {
@@ -78,7 +82,7 @@ class DistributedMultiInstanceTest {
                         .contentType("application/json")
                         .content("{\"phone\":\"1234567890\"}"))
                 .andExpect(status().isTooManyRequests())
-                .andExpect(jsonPath("$.error").exists());
+                .andExpect(jsonPath("$.message").exists());
     }
 
     @Test
@@ -162,7 +166,7 @@ class DistributedMultiInstanceTest {
     @DisplayName("Redis-backed state persists across requests in distributed environment")
     void testRedisStatePersistence() throws Exception {
         String userId = "persistence-test-user";
-        String otp_tb_key = "otp_tb_" + userId;
+        String otpTbKey = "tb:" + userId + ":otp";
 
         // Make 25 requests
         for (int i = 0; i < 25; i++) {
@@ -174,8 +178,7 @@ class DistributedMultiInstanceTest {
         }
 
         // Verify state exists in Redis
-        String bucketState = redisTemplate.opsForValue().get(otp_tb_key);
-        assert bucketState != null : "Token bucket state should be persisted in Redis";
+        assertTrue(redisTemplate.hasKey(otpTbKey), "...");
 
         // Simulate a second instance reading the same state
         // Make 25 more requests

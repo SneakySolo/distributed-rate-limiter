@@ -19,14 +19,11 @@ local nowMs = (tonumber(time[1]) * 1000) + (math.floor(tonumber(time[2]) / 1000)
 local refillRatePerMs = refillRatePerMin / 60000.0
 
 -- Fetch current bucket state
-local bucket = redis.call('HGETALL', bucketKey)
-local tokens = capacity
-local lastRefillMs = nowMs
+local storedTokens = redis.call('HGET', bucketKey, 'tokens')
+local storedLastRefillMs = redis.call('HGET', bucketKey, 'lastRefillMs')
 
-if #bucket > 0 then
-    tokens = tonumber(bucket[2]) or capacity
-    lastRefillMs = tonumber(bucket[4]) or nowMs
-end
+local tokens = tonumber(storedTokens) or capacity
+local lastRefillMs = tonumber(storedLastRefillMs) or nowMs
 
 -- Calculate elapsed time since last refill
 local elapsedMs = nowMs - lastRefillMs

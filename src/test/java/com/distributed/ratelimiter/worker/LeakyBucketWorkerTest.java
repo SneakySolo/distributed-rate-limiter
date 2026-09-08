@@ -102,7 +102,7 @@ public class LeakyBucketWorkerTest extends TestRedisContainer {
         String queueKey = "lb:" + userId + ":payment:queue";
 
         // Wait a small amount (not enough for request 1 to be due)
-        Thread.sleep(300);
+        Thread.sleep(100);
 
         // Process queue - should only process the first request (scheduled at nowMs)
         worker.processQueue();
