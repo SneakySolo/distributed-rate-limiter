@@ -41,7 +41,7 @@ public class LeakyBucketRateLimiter implements RateLimiter {
             // Calculate scheduled time (leak rate = ~1 per 600ms)
             long leakIntervalMs = 60000L / config.getLeakyBucket().getLeakRatePerMinute();
             long queueDepth = getQueueDepth(queueKey);
-            long scheduledMs = nowMs + (queueDepth * leakIntervalMs);
+            long scheduledMs = nowMs + (queueDepth * leakIntervalMs); // ex - say the queue has 3 req already so this one would be scheduled at current + (3 * leakIntervalMs, i.e 600ms)
 
             List<Object> result = redisTemplate.execute(
                     enqueueScript,

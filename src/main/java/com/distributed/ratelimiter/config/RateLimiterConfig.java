@@ -3,6 +3,13 @@ package com.distributed.ratelimiter.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+/*
+ * This is to load the algorithm metric into them from application.yml
+ * They get it from appliaction.yml
+ * but we also have default values set here in case
+ * on successfully getting values, they override the default values
+*/
+
 @Component
 @ConfigurationProperties(prefix = "ratelimiter")
 public class RateLimiterConfig {
@@ -26,6 +33,7 @@ public class RateLimiterConfig {
         this.leakyBucket = leakyBucket;
     }
 
+    // default values set here, gets override by values from application.yml
     public static class TokenBucketProperties {
         private long capacity = 100;
         private long refillRatePerMinute = 100;
@@ -56,6 +64,7 @@ public class RateLimiterConfig {
         }
     }
 
+    // default values set here, gets override by values from application.yml
     public static class LeakyBucketProperties {
         private long capacity = 100;
         private long leakRatePerMinute = 100;
