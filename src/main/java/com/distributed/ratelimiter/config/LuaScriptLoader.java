@@ -6,14 +6,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 
 /*
  * This is to load our LUA file into algos during runtime
  * also this reads the whole file into a byte array and converts it to a String.
  * The scripts are loaded once at startup and held in memory as plain Java Strings.
-*/
+ */
 
 @Component
 public class LuaScriptLoader {
@@ -32,7 +32,8 @@ public class LuaScriptLoader {
     private String loadScript(String resourcePath) throws IOException {
         try {
             ClassPathResource resource = new ClassPathResource(resourcePath);
-            String script = new String(Files.readAllBytes(Paths.get(resource.getFile().getPath())));
+            InputStream inputStream = resource.getInputStream();
+            String script = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
             log.debug("Loaded Lua script: {}", resourcePath);
             return script;
         } catch (IOException e) {
