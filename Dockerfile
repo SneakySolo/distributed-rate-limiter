@@ -1,11 +1,13 @@
-FROM maven:3.9.6-eclipse-temurin-21 AS builder
-WORKDIR /build
-COPY pom.xml .
-COPY src ./src
-RUN mvn clean package -DskipTests
+# Simplified Dockerfile - assumes target/rate-limiter-*.jar already exists
+# This is faster and easier to debug than building Maven inside Docker
+#
+# Usage:
+# 1. mvn clean package -DskipTests  (build on your machine)
+# 2. docker build -t rate-limiter:latest .
+# 3. docker-compose up -d
 
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
-COPY --from=builder /build/target/*.jar app.jar
+COPY target/rate-limiter-*.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]
