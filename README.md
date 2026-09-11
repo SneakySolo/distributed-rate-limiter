@@ -1,8 +1,7 @@
 # High-Throughput Distributed API Rate Limiter
 
-> A distributed rate limiter built with **Java 21, Spring Boot, Redis, Lua, Docker, and Nginx**.
->
-> Designed to enforce rate limits consistently across multiple application instances using shared Redis state.
+A distributed rate limiter built with **Java 21, Spring Boot, Redis, Lua, Docker, and Nginx**.
+Designed to enforce rate limits consistently across multiple application instances using shared Redis state.
 
 ---
 
