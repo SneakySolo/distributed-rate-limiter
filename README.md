@@ -269,7 +269,6 @@ Monitoring and performance analysis will be added in the next version:
 
 - [ ] **Prometheus** metrics
 - [ ] **Grafana** dashboards
-- [ ] **k6** load testing and benchmarking
 - [ ] Additional observability and performance analysis
 
 ---
