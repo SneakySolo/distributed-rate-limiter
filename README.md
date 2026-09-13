@@ -82,7 +82,7 @@ All three application instances share the same Redis state, so rate limits remai
 - Refill rate: **100 requests/minute**
 - Bucket TTL: **300 seconds**
 - Redis key: `tb:<userId>:otp`
-
+ 
 ### Leaky Bucket — Payment
 
 - Queue capacity: **100 requests**
