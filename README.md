@@ -269,7 +269,7 @@ Monitoring and performance analysis will be added in the next version:
 
 - [ ] **Prometheus** metrics
 - [ ] **Grafana** dashboards
-- [ ] Additional observability and performance analysis
+- [ ] **Redis Cluster**
 
 ---
 
