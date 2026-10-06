@@ -1,4 +1,4 @@
-# Distributed Rate Limiter
+# Distributed Rate Limiter 
 
 A distributed api rate limiter built with **Java 21, Spring Boot, Maven, Redis, Lua, Docker, and Nginx**.</br>
 Designed to enforce rate limits consistently across multiple application instances using shared Redis state.
