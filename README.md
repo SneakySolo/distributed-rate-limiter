@@ -5,7 +5,7 @@ Designed to enforce rate limits consistently across multiple application instanc
 
 ----
 
-## 🏗️ Architecture
+## 🏗️ Architecture 
 
 ```mermaid
 graph TD
